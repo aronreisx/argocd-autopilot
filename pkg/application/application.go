@@ -80,6 +80,11 @@ type (
 		Annotations      map[string]string
 		Exclude          string
 		Include          string
+		HelmChart        string
+		HelmRelease      string
+		HelmValues       map[string]interface{}
+		HelmValueFiles   []string
+		CreateNamespace  bool
 	}
 
 	baseApp struct {
@@ -105,13 +110,27 @@ type (
 		namespace *v1.Namespace
 		config    *Config
 	}
+
+	helmApp struct {
+		baseApp
+		helmConfig *helmConfig
+	}
+
+	helmConfig struct {
+		Config
+		Chart           string                 `json:"chart,omitempty"`
+		ReleaseName     string                 `json:"releaseName,omitempty"`
+		ValueFiles      []string               `json:"valueFiles,omitempty"`
+		Values          map[string]interface{} `json:"values,omitempty"`
+		CreateNamespace bool                   `json:"createNamespace,omitempty"`
+	}
 )
 
 // AddFlags adds application creation flags to cmd.
 func AddFlags(cmd *cobra.Command) *CreateOptions {
 	opts := &CreateOptions{}
 	cmd.Flags().StringVar(&opts.AppSpecifier, "app", "", "The application specifier (e.g. github.com/argoproj/argo-workflows/manifests/cluster-install/?ref=v3.0.3)")
-	cmd.Flags().StringVar(&opts.AppType, "type", "", "The application type (kustomize|dir)")
+	cmd.Flags().StringVar(&opts.AppType, "type", "", "The application type (kustomize|dir|helm)")
 	cmd.Flags().StringVar(&opts.DestServer, "dest-server", store.Default.DestServer, fmt.Sprintf("K8s cluster URL (e.g. %s)", store.Default.DestServer))
 	cmd.Flags().StringVar(&opts.DestNamespace, "dest-namespace", "", "K8s target namespace (overrides the namespace specified in the kustomization.yaml)")
 	cmd.Flags().StringVar(&opts.InstallationMode, "installation-mode", InstallationModeNormal, "One of: normal|flat. "+
@@ -120,6 +139,11 @@ func AddFlags(cmd *cobra.Command) *CreateOptions {
 	cmd.Flags().StringToStringVar(&opts.Annotations, "annotations", nil, "Optional annotations that will be set on the Application resource. (e.g. \"{{ placeholder }}=my-org\"")
 	cmd.Flags().StringVar(&opts.Include, "include", "", "Optional glob for files to include")
 	cmd.Flags().StringVar(&opts.Exclude, "exclude", "", "Optional glob for files to exclude")
+	// Helm-specific flags
+	cmd.Flags().StringVar(&opts.HelmChart, "helm-chart", "", "Helm chart name (for Helm applications)")
+	cmd.Flags().StringVar(&opts.HelmRelease, "helm-release", "", "Helm release name (for Helm applications)")
+	cmd.Flags().StringSliceVar(&opts.HelmValueFiles, "helm-value-files", nil, "Helm value files (for Helm applications)")
+	cmd.Flags().BoolVar(&opts.CreateNamespace, "create-namespace", false, "Create namespace if it doesn't exist (for Helm applications)")
 
 	return opts
 }
@@ -209,6 +233,8 @@ func (o *CreateOptions) Parse(projectName, repoURL, targetRevision, repoRoot str
 		return newKustApp(o, projectName, repoURL, targetRevision, repoRoot)
 	case AppTypeDirectory:
 		return newDirApp(o), nil
+	case AppTypeHelm:
+		return newHelmApp(o, projectName), nil
 	default:
 		return nil, ErrUnknownAppType
 	}
@@ -436,6 +462,46 @@ func newDirApp(opts *CreateOptions) *dirApp {
 	return app
 }
 
+/* helmApp Application impl */
+func newHelmApp(opts *CreateOptions, projectName string) *helmApp {
+	app := &helmApp{
+		baseApp: baseApp{opts},
+	}
+
+	host, orgRepo, path, gitRef, _, suffix, _ := util.ParseGitUrl(opts.AppSpecifier)
+	url := host + orgRepo + suffix
+	if path == "" {
+		path = "."
+	}
+
+	// Default release name to {app-name}-{project-name} if not provided
+	releaseName := opts.HelmRelease
+	if releaseName == "" {
+		releaseName = fmt.Sprintf("%s-%s", opts.AppName, projectName)
+	}
+
+	app.helmConfig = &helmConfig{
+		Config: Config{
+			AppName:           opts.AppName,
+			UserGivenName:     opts.AppName,
+			DestNamespace:     opts.DestNamespace,
+			DestServer:        opts.DestServer,
+			SrcRepoURL:        url,
+			SrcPath:           path,
+			SrcTargetRevision: gitRef,
+			Labels:            opts.Labels,
+			Annotations:       opts.Annotations,
+		},
+		Chart:           opts.HelmChart,
+		ReleaseName:     releaseName,
+		ValueFiles:      opts.HelmValueFiles,
+		Values:          opts.HelmValues,
+		CreateNamespace: opts.CreateNamespace,
+	}
+
+	return app
+}
+
 func (app *dirApp) CreateFiles(repofs fs.FS, appsfs fs.FS, projectName string) error {
 	appPath := repofs.Join(store.Default.AppsDir, app.opts.AppName, projectName)
 	if repofs.ExistsOrDie(appPath) {
@@ -456,6 +522,20 @@ func (app *dirApp) CreateFiles(repofs fs.FS, appsfs fs.FS, projectName string) e
 		if err = createNamespaceManifest(repofs, clusterName, kube.GenerateNamespace(app.opts.DestNamespace, nil)); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (app *helmApp) CreateFiles(repofs fs.FS, appsfs fs.FS, projectName string) error {
+	appPath := repofs.Join(store.Default.AppsDir, app.opts.AppName, projectName)
+	if repofs.ExistsOrDie(appPath) {
+		return ErrAppAlreadyInstalledOnProject
+	}
+
+	configPath := repofs.Join(appPath, "config_helm.json")
+	if err := repofs.WriteJson(configPath, app.helmConfig); err != nil {
+		return fmt.Errorf("failed to write app config_helm.json: %w", err)
 	}
 
 	return nil

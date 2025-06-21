@@ -335,6 +335,32 @@ func generateProjectManifests(o *GenerateProjectOptions) (projectYAML, appSetYAM
 					},
 				},
 			},
+			{
+				Git: &argocdv1alpha1.GitGenerator{
+					RepoURL:  o.RepoURL,
+					Revision: o.Revision,
+					Files: []argocdv1alpha1.GitFileGeneratorItem{
+						{
+							Path: path.Join(o.InstallationPath, store.Default.AppsDir, "**", o.Name, "config_helm.json"),
+						},
+					},
+					RequeueAfterSeconds: &DefaultApplicationSetGeneratorInterval,
+					Template: argocdv1alpha1.ApplicationSetTemplate{
+						ApplicationSetTemplateMeta: argocdv1alpha1.ApplicationSetTemplateMeta{},
+						Spec: argocdv1alpha1.ApplicationSpec{
+							Destination: argocdv1alpha1.ApplicationDestination{},
+							Project:     "",
+							Source: &argocdv1alpha1.ApplicationSource{
+								RepoURL: "",
+								Helm: &argocdv1alpha1.ApplicationSourceHelm{
+									ReleaseName: "{{ releaseName }}",
+									ValueFiles:  []string{},
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	})
 	if err != nil {
@@ -452,16 +478,16 @@ func NewProjectDeleteCommand() *cobra.Command {
 		Example: util.Doc(`
 # To run this command you need to create a personal access token for your git provider,
 # and have a bootstrapped GitOps repository, and provide them using:
-	
+
 		export GIT_TOKEN=<token>
 		export GIT_REPO=<repo_url>
 
 # or with the flags:
-	
+
 		--token <token> --repo <repo_url>
-		
+
 # Delete a project
-	
+
 	<BIN> project delete <project_name>
 `),
 		PreRun: func(_ *cobra.Command, _ []string) { cloneOpts.Parse() },

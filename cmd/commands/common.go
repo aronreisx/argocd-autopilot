@@ -238,6 +238,9 @@ func createAppSet(o *createAppSetOptions) ([]byte, error) {
 							Prune:      o.prune,
 							AllowEmpty: true,
 						},
+						SyncOptions: []string{
+							"CreateNamespace={{ createNamespace }}",
+						},
 					},
 					IgnoreDifferences: []argocdv1alpha1.ResourceIgnoreDifferences{
 						{
